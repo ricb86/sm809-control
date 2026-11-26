@@ -1,0 +1,25 @@
+name: Testes e pacote .deb
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Testes unitários
+        run: python3 -m unittest discover -s src/tests -v
+
+      - name: Gerar pacote .deb
+        run: ./packaging/build_deb.sh
+
+      - name: Publicar artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm809-control-deb
+          path: dist/*.deb

@@ -1,0 +1,10 @@
+{
+  "repeat": 1,
+  "events": [
+    {"key": 4, "press": true, "delay": 1},
+    {"key": 4, "press": false, "delay": 1},
+    {"key": 0, "command": 1, "wait": 50},
+    {"key": 5, "press": true, "delay": 1},
+    {"key": 5, "press": false, "delay": 1}
+  ]
+}
