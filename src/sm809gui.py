@@ -13,6 +13,7 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 import cairo  # noqa: E402
 from sm809 import protocol as proto  # noqa: E402
 from sm809.config import Buttons, Lighting, MacroEvent, Macros, Profiles  # noqa: E402
+from sm809.gui_tabs import MacroProfileUI  # noqa: E402
 from sm809.runtime import data_home, open_mouse  # noqa: E402
 from sm809.usbfs import UsbMouse  # noqa: E402
 
@@ -63,7 +64,7 @@ def parse_hex(text: str) -> tuple[int, int, int]:
     return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
 
 
-class App(Gtk.Window):
+class App(Gtk.Window, MacroProfileUI):
     def __init__(self, key: str | None = None, verbose: bool = False):
         super().__init__(title="SM809 Control")
         self.key, self.verbose = key, verbose
@@ -86,8 +87,8 @@ class App(Gtk.Window):
         self.color_hex = "0000ff"
         self._build_light()
         self._build_buttons()
-        self._build_macros()
-        self._build_profiles()
+        self._build_macros_ui()
+        self._build_profiles_ui()
         self._read_light(silent=True)
         self._refresh_status()
         self.safe(self._write_dpi_palette)

@@ -17,6 +17,7 @@ mkdir -p \
   "$STAGE/usr/share/icons/hicolor/128x128/apps" \
   "$STAGE/usr/share/icons/hicolor/scalable/apps" \
   "$STAGE/usr/share/doc/sm809-control/examples" \
+  "$STAGE/usr/share/sm809/docs/references" \
   "$STAGE/lib/udev/rules.d"
 
 # --- metadados -------------------------------------------------------------
@@ -57,6 +58,7 @@ chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/postrm"
 # --- codigo ----------------------------------------------------------------
 cp "$ROOT/src/sm809ctl.py" "$ROOT/src/sm809gui.py" "$STAGE/usr/share/sm809/"
 find "$ROOT/src/sm809" -maxdepth 1 -name '*.py' -exec cp {} "$STAGE/usr/share/sm809/sm809/" \;
+cp "$ROOT/docs/references/SM809-Data.ini" "$STAGE/usr/share/sm809/docs/references/"
 
 cat > "$STAGE/usr/bin/sm809ctl" <<'EOF'
 #!/bin/sh

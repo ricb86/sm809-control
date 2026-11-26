@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-INI = Path(__file__).resolve().parents[2] / "docs" / "references" / "SM809-Data.ini"
+_base = Path(__file__).resolve()
+_candidates = [
+    _base.parents[2] / "docs" / "references" / "SM809-Data.ini",  # repositorio
+    _base.parents[1] / "docs" / "references" / "SM809-Data.ini",  # .deb
+]
+INI = next((path for path in _candidates if path.exists()), _candidates[0])
 
 
 def _parse() -> list[list[bytes]]:

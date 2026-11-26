@@ -52,6 +52,14 @@ fábrica), ajustes de brilho/frequência/comprimento, cor fixa ou ciclo de 8 cor
 com paleta gravada no mouse e uma prévia do mouse. O botão **Restore Blue** volta
 ao azul estático usado neste projeto.
 
+As abas **Macro** e **Perfis** seguem o layout do executável original: combo de
+9 macros/perfis com **Add/Delete/Menu**, campo de renomeação, lista lateral,
+gravação de teclas em tempo real (Esc encerra), controles de delay/loop,
+edição de eventos com Up/Down/Delete/Clear/Move e import/export comum ou
+base64 (`SM809ENC1:`). Em **Perfis** há Apply/Save/Reset/Refresh e as opções
+de salvar LED, botões e macros. Os arquivos ficam em
+`~/.local/share/sm809/macros/` e `~/.local/share/sm809/profiles/`.
+
 ## Uso
 
 ```bash
@@ -112,6 +120,9 @@ a cada execução, instale a regra udev:
 sudo cp udev/99-sm809.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
+
+A mesma regra libera o `/dev/hidraw` do mouse para o monitor opcional de
+estágio DPI e para Firmware 2.x.
 
 ## Funcionalidades por firmware
 
