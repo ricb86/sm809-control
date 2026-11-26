@@ -1,14 +1,15 @@
 #!/usr/bin/python3
 """Interface GTK 3 do SM809 inspirada no driver original."""
 from __future__ import annotations
-import argparse, json, sys
+import argparse, fcntl, json, os, sys, threading, time
+from contextlib import contextmanager
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gi  # noqa: E402
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 gi.require_foreign("cairo")
-from gi.repository import Gdk, Gtk  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 import cairo  # noqa: E402
 from sm809 import protocol as proto  # noqa: E402
 from sm809.config import Buttons, Lighting, MacroEvent, Macros, Profiles  # noqa: E402
@@ -25,6 +26,7 @@ LIGHT_MODES = [
 ]
 LOOP_COLORS = ["ff0000", "00ff00", "0000ff", "ffff00",
                "ff00ff", "00ffff", "ff7f00", "ffffff"]
+DPI_COLORS = LOOP_COLORS  # cores dos 8 estagios (pagina 1 do comando 0x10)
 CSS = b"""
 window { background-color: #111111; color: #e8e8e8; }
 headerbar { background-color: #202020; color: #ffffff; }
@@ -65,6 +67,10 @@ class App(Gtk.Window):
     def __init__(self, key: str | None = None, verbose: bool = False):
         super().__init__(title="SM809 Control")
         self.key, self.verbose = key, verbose
+        self._hw_lock = threading.Lock()
+        self.dpi_stage = 0
+        self._dpi_stop = threading.Event()
+        self._dpi_thread = None
         self.set_default_size(1000, 660)
         self.set_border_width(10)
         header = Gtk.HeaderBar(title="SM809 Control", subtitle="SOLAKAKA SM809 Wired")
@@ -84,6 +90,9 @@ class App(Gtk.Window):
         self._build_profiles()
         self._read_light(silent=True)
         self._refresh_status()
+        self.safe(self._write_dpi_palette)
+        if os.environ.get("SM809_DPI_INDICATOR") == "1":
+            self.dpi_indicator.set_active(True)
 
     def message(self, text: str) -> None:
         self.status.push(0, text)
@@ -95,8 +104,11 @@ class App(Gtk.Window):
             self.message(f"Erro: {exc}")
             return None
 
+    @contextmanager
     def mouse(self):
-        return open_mouse(self.key, self.verbose)
+        with self._hw_lock:
+            with open_mouse(self.key, self.verbose) as device:
+                yield device
 
     def _detect_firmware3(self) -> bool:
         try:
@@ -162,9 +174,6 @@ class App(Gtk.Window):
             else:
                 radio = Gtk.RadioButton.new_from_widget(group)
                 radio.set_label(label)
-            if self.fw3 and code not in (0, 1, 2, 3):
-                radio.set_sensitive(False)
-                radio.set_tooltip_text("Firmware 3.x: modo não suportado")
             radio.connect("toggled", self._mode_changed, key)
             self.mode_buttons[key] = radio
             modes.attach(radio, index // 6, index % 6, 1, 1)
@@ -213,6 +222,11 @@ class App(Gtk.Window):
             btn.connect("clicked", handler)
             actions.pack_start(btn, False, True, 0)
         left.pack_start(actions, False, True, 0)
+        self.dpi_indicator = Gtk.CheckButton(label="Atualizar LED DPI ao trocar estagio")
+        self.dpi_indicator.set_tooltip_text(
+            "Quando ativo, DPI+/DPI- reescreve a cor do LED dedicado do DPI.")
+        self.dpi_indicator.connect("toggled", self._toggle_dpi_indicator)
+        left.pack_start(self.dpi_indicator, False, True, 0)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         right.pack_start(Gtk.Label(label="Preview", xalign=0), False, True, 0)
@@ -280,15 +294,20 @@ class App(Gtk.Window):
         mode = self._selected_mode()
         p1, p2 = self._params_for_mode()
         color = self.color_hex
+        loop = self.loop_radio.get_active()
 
         def work():
             r, g, b = parse_hex(color)
             with self.mouse() as m:
                 light = Lighting(m)
+                if loop:
+                    light.set_palette([parse_hex(c) for c in LOOP_COLORS])
                 if mode != "off":
                     light.set_color(r, g, b)
                 light.set_effect(mode, p1, p2)
-            self.message(f"Luz aplicada: {mode} #{r:02x}{g:02x}{b:02x} p1={p1:#04x} p2={p2:#04x}")
+            extra = " | Loop Color" if loop else ""
+            self.message(f"Luz aplicada: {mode} #{r:02x}{g:02x}{b:02x} "
+                         f"p1={p1:#04x} p2={p2:#04x}{extra}")
             self._refresh_status()
         self.safe(work)
 
@@ -299,6 +318,83 @@ class App(Gtk.Window):
         self.mode_buttons["static"].set_active(True)
         self.brightness.set_value(255)
         self._apply_light()
+
+    # ------------------------ indicador de cor do DPI -----------------------
+    @staticmethod
+    def _find_hidraw() -> str | None:
+        base = "/sys/class/hidraw"
+        if not os.path.isdir(base):
+            return None
+        for name in os.listdir(base):
+            uevent = os.path.join(base, name, "device", "uevent")
+            try:
+                text = open(uevent, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if "HID_ID=0003:000004D9:0000A09F" in text:
+                return "/dev/" + name
+        return None
+
+    def _toggle_dpi_indicator(self, button: Gtk.CheckButton) -> None:
+        if button.get_active():
+            path = self._find_hidraw()
+            if not path:
+                button.set_active(False)
+                self.message("Mouse hidraw nao encontrado")
+                return
+            self._dpi_stop.clear()
+            self._dpi_thread = threading.Thread(
+                target=self._dpi_monitor_loop, args=(path,), daemon=True)
+            self._dpi_thread.start()
+            self.message(f"Indicador DPI ativo ({path})")
+        else:
+            self._dpi_stop.set()
+            if self._dpi_thread:
+                self._dpi_thread.join(timeout=1)
+                self._dpi_thread = None
+            self.message("Indicador DPI desativado")
+
+    def _dpi_monitor_loop(self, path: str) -> None:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            GLib.idle_add(self.message, f"Indicador DPI: {exc}")
+            GLib.idle_add(self.dpi_indicator.set_active, False)
+            return
+        previous = 0
+        try:
+            while not self._dpi_stop.is_set():
+                try:
+                    data = os.read(fd, 64)
+                except BlockingIOError:
+                    time.sleep(0.02)
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    continue
+                buttons = data[0] & 0x11  # 0x10 = DPI+, 0x01 = DPI-
+                if previous & 0x10 and not buttons & 0x10:
+                    self.dpi_stage = (self.dpi_stage + 1) % len(DPI_COLORS)
+                    GLib.idle_add(self._apply_dpi_color)
+                if previous & 0x01 and not buttons & 0x01:
+                    self.dpi_stage = (self.dpi_stage - 1) % len(DPI_COLORS)
+                    GLib.idle_add(self._apply_dpi_color)
+                previous = buttons
+        finally:
+            os.close(fd)
+
+    def _write_dpi_palette(self) -> None:
+        """Reescreve a pagina 1; isso atualiza o LED dedicado do estagio atual."""
+        with self.mouse() as m:
+            Lighting(m).set_palette([parse_hex(c) for c in DPI_COLORS], page=1)
+
+    def _apply_dpi_color(self) -> None:
+        try:
+            self._write_dpi_palette()
+            self.message(f"Indicador DPI atualizado (estagio {self.dpi_stage + 1})")
+        except Exception as exc:  # noqa: BLE001
+            self.message(f"Indicador DPI: {exc}")
 
     def _read_light(self, silent: bool = False) -> None:
         def work():
@@ -579,6 +675,23 @@ def main() -> None:
     parser.add_argument("--key", help="chave de 6 caracteres")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    # Evita duas instancias disputando a escrita no mouse.
+    data_home().mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(data_home() / "sm809-gui.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        dialog = Gtk.MessageDialog(
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.OK,
+            text="O SM809 Control já está aberto.",
+        )
+        dialog.run()
+        dialog.destroy()
+        return
+
     settings = Gtk.Settings.get_default()
     if settings:
         settings.set_property("gtk-application-prefer-dark-theme", True)
@@ -586,7 +699,9 @@ def main() -> None:
     provider.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    App(args.key, args.verbose).show_all()
+    app = App(args.key, args.verbose)
+    app.show_all()
+    app._update_mode_controls()  # show_all() revela tambem os controles ocultos
     Gtk.main()
 
 

@@ -214,8 +214,9 @@ Validação adicional (botões e macros no firmware 3.01):
 
 Ainda pendente (requer captura ou outro firmware):
 
-1. Firmware 3.x suporta só 4 efeitos (`00` off, `01` estático, `02` respiração,
-   `03` ciclo); os 12 modos do `lan(CN).xml` parecem ser do firmware 2.x.
+1. ~~Firmware 3.x suporta só 4 efeitos.~~ Corrigido: todos os 12 modos do
+   `lan.xml` são aceitos em 3.01 (`0x0D`), e a paleta de 8 cores é gravada com
+   `0x10 page 18` + bloco de 32 bytes.
 2. O firmware 3.x **não devolve tabelas** (sem endpoint IN na interface 2), por
    isso botões/macros são somente escrita e o estado é mantido em cache local.
 3. Troca entre os 4 perfis do software oficial (comando `02`?) não foi capturada.

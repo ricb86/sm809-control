@@ -46,11 +46,11 @@ Após instalar:
 
 Os dados do usuário ficam em `~/.local/share/sm809/`.
 
-A aba **Luz** do aplicativo replica a organização do driver original: 12 efeitos
-em duas colunas, ajustes de brilho/frequência/comprimento, cor fixa ou ciclo de
-8 cores e uma prévia do mouse. No firmware 3.x, os efeitos além de `Neon`
-aparecem desabilitados (limitação do próprio firmware). O botão **Restore Blue**
-volta ao azul estático usado neste projeto.
+A aba **Luz** do aplicativo replica a organização do driver original: os 12
+efeitos em duas colunas (incluindo os modos de alternância do firmware de
+fábrica), ajustes de brilho/frequência/comprimento, cor fixa ou ciclo de 8 cores
+com paleta gravada no mouse e uma prévia do mouse. O botão **Restore Blue** volta
+ao azul estático usado neste projeto.
 
 ## Uso
 
@@ -117,7 +117,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 | Recurso | Firmware 2.x (hidraw) | Firmware 3.01 (usbfs) |
 |---|---|---|
-| Cor RGB / efeitos | 12 modos | `off`, `static`, `breathing`, `neon` (ciclo) |
+| Cor RGB / efeitos | 12 modos | 12 modos (paleta `0x10` gravável) |
 | Polling / DPI | sim | sim |
 | Remapeamento de botões | sim (mapa 64 bytes, cmd `0x12`) | **sim** (4 perfis × 16 botões, bloco `0x03`) |
 | Macros | sim (128 bytes/página, cmd `0x13`) | **sim** (9 páginas, bloco `0x03`) |
@@ -128,6 +128,12 @@ trava a interface ou exige reset USB. Tabelas são **somente escrita**; o estado
 atual é mantido em `~/.local/share/sm809/buttons/` e
 `~/.local/share/sm809/macros/` e parte do mapa de fábrica (`Data.ini`) quando
 não há cache. Use `SM809_HOME` para sobrescrever esse diretório.
+
+Os botões físicos DPI+/DPI- mudam a velocidade normalmente. O LED dedicado de
+estágio DPI obedece à paleta da página 1 (`0x10 page 01`), mas neste firmware a
+firmware não atualiza esse LED automaticamente quando o estágio muda; a opção
+"Atualizar LED DPI ao trocar estagio" tenta reescrever a tabela, sem garantia
+de refresco imediato.
 
 A gravação foi validada no hardware: feature report `[0x12, perfil, 0x40]`
 seguido de 2 blocos de 32 bytes e `[0x13, página, 0x80]` seguido de 4 blocos,

@@ -42,8 +42,6 @@ class Lighting:
 
     def set_effect(self, effect: str | int, p1: int | None = None, p2: int | None = None) -> None:
         mode = effect if isinstance(effect, int) else proto.EFFECTS[effect]
-        if self.mouse.__class__.__name__ == "UsbMouse" and mode not in (0x00, 0x01, 0x02, 0x03):
-            raise ValueError("firmware 3.x suporta apenas off/static/breathing/neon(ciclo)")
         if p1 is None or p2 is None:
             d1, d2 = proto.DEFAULT_EFFECT_PARAMS.get(mode, (0x00, 0x00))
             p1 = d1 if p1 is None else p1
@@ -65,8 +63,6 @@ class Lighting:
         return [tuple(raw[i : i + 3]) for i in range(0, 24, 3)]
 
     def set_palette(self, colors: list[tuple[int, int, int]], page: int = 0) -> None:
-        if self.mouse.__class__.__name__ == "UsbMouse":
-            raise NotImplementedError("paleta nao e gravavel no firmware 3.x")
         raw = b"".join(bytes(c)[:3].ljust(3, b"\x00") for c in colors[:8]).ljust(32, b"\x00")
         self.mouse.write_block(proto.CMD_CYCLE_PALETTE, page, 0x18, raw)
 

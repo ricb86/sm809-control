@@ -1,3 +1,5 @@
 # SOLAKAKA SM809 Wired / Holtek 04D9:A09F (E-Signal USB Gaming Mouse)
 # A interface de configuracao 2 e acessada via usbfs, nao pelo hidraw.
 SUBSYSTEM=="usb", ATTR{idVendor}=="04d9", ATTR{idProduct}=="a09f", MODE="0664", GROUP="plugdev"
+# Necessario para o indicador de cor dos estagios DPI (botoes DPI+/DPI-)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d9", ATTRS{idProduct}=="a09f", MODE="0666"

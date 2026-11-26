@@ -225,15 +225,18 @@ class UsbMouse:
         time.sleep(COMMAND_DELAY)
 
     def write_block(self, cmd: int, page: int, length: int, data: bytes) -> bytes:
-        """Escreve uma tabela: SET feature [cmd, page, len] + blocos de 32 bytes."""
-        if len(data) != length or length % BLOCK_SIZE:
-            raise ValueError(f"tabela deve ter {length} bytes multiplos de {BLOCK_SIZE}")
+        """Escreve uma tabela: SET feature [cmd, page, len] + blocos de 32 bytes.
+
+        Algumas tabelas (como a paleta `0x10`) anunciam 24 bytes no cabecalho
+        mas enviam um bloco completo de 32 bytes no endpoint de interrupcao.
+        """
+        block_len = ((max(len(data), length) + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
+        padded = bytes(data).ljust(block_len, b"\x00")
         self._send(proto.build(cmd, bytes((page, length))))
         time.sleep(COMMAND_DELAY)
         ack = self._reply(cmd)
         if ack is None:
             raise TimeoutError(f"sem ACK para tabela {cmd:02x}")
-        for off in range(0, length, BLOCK_SIZE):
-            chunk = data[off:off + BLOCK_SIZE]
-            self._bulk_out(ENDPOINT_OUT, chunk.ljust(BLOCK_SIZE, b"\x00"))
+        for off in range(0, block_len, BLOCK_SIZE):
+            self._bulk_out(ENDPOINT_OUT, padded[off:off + BLOCK_SIZE])
         return ack[1:7]
