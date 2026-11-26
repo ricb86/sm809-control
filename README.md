@@ -46,6 +46,12 @@ Após instalar:
 
 Os dados do usuário ficam em `~/.local/share/sm809/`.
 
+A aba **Luz** do aplicativo replica a organização do driver original: 12 efeitos
+em duas colunas, ajustes de brilho/frequência/comprimento, cor fixa ou ciclo de
+8 cores e uma prévia do mouse. No firmware 3.x, os efeitos além de `Neon`
+aparecem desabilitados (limitação do próprio firmware). O botão **Restore Blue**
+volta ao azul estático usado neste projeto.
+
 ## Uso
 
 ```bash
