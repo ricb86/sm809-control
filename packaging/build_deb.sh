@@ -27,8 +27,8 @@ Section: utils
 Priority: optional
 Architecture: all
 Depends: python3 (>= 3.8), python3-gi, gir1.2-gtk-3.0, udev
-Maintainer: ric_b <ric_b@users.noreply.github.com>
-Homepage: https://github.com/ric_b/sm809-control
+Maintainer: ricb86 <ricb86@users.noreply.github.com>
+Homepage: https://github.com/ricb86/sm809-control
 Description: Controlador para mouse SOLAKAKA SM809 (RGB, botões e macros)
  Software Linux para o mouse gamer SOLAKAKA SM809 Wired (04D9:A09F).
  Controla cor/efeitos RGB, remapeamento de botões, macros e perfis,
@@ -86,7 +86,7 @@ sm809-control ($VERSION) unstable; urgency=low
   * RGB, botoes, macros, perfis, CLI e interface grafica GTK.
   * Suporte ao firmware 3.01 via usbfs.
 
- -- ric_b <ric_b@users.noreply.github.com>  $(date -R)
+ -- ricb86 <ricb86@users.noreply.github.com>  $(date -R)
 EOF
 
 # --- build -----------------------------------------------------------------
