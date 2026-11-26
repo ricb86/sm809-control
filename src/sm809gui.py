@@ -1,24 +1,43 @@
 #!/usr/bin/python3
-"""Interface gráfica GTK 3 para o SM809 (RGB, botões, macros e perfis)."""
-
+"""Interface GTK 3 do SM809 inspirada no driver original."""
 from __future__ import annotations
-
-import argparse
-import json
-import sys
+import argparse, json, sys
 from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import gi  # noqa: E402
-
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
+gi.require_foreign("cairo")
 from gi.repository import Gdk, Gtk  # noqa: E402
-
-from sm809 import protocol as proto                              # noqa: E402
+import cairo  # noqa: E402
+from sm809 import protocol as proto  # noqa: E402
 from sm809.config import Buttons, Lighting, MacroEvent, Macros, Profiles  # noqa: E402
-from sm809.runtime import data_home, open_mouse                  # noqa: E402
+from sm809.runtime import data_home, open_mouse  # noqa: E402
+from sm809.usbfs import UsbMouse  # noqa: E402
+
+LIGHT_MODES = [
+    ("off", "Off", 0x00), ("static", "Standard", 0x01),
+    ("breathing", "Breathing", 0x02), ("neon", "Neon", 0x03),
+    ("wave", "Wave", 0x04), ("key-reaction", "Key reaction", 0x05),
+    ("trailing", "Trailing", 0x06), ("drag", "Drag back and forth", 0x07),
+    ("slide", "Slide", 0x08), ("yo-yo", "YO-YO", 0x09),
+    ("marbles", "Marbles", 0x0A), ("flying-star", "Flying star", 0x0B),
+]
+LOOP_COLORS = ["ff0000", "00ff00", "0000ff", "ffff00",
+               "ff00ff", "00ffff", "ff7f00", "ffffff"]
+CSS = b"""
+window { background-color: #111111; color: #e8e8e8; }
+headerbar { background-color: #202020; color: #ffffff; }
+notebook header { background-color: #181818; }
+notebook tab { background-color: #2b2b2b; color: #cfcfcf; padding: 6px 14px; }
+notebook tab:checked { background-color: #0d6efd; color: #ffffff; }
+.frame { background-color: #1c1c1c; border: 1px solid #5f5f5f; }
+.section { background-color: #5f5f5f; color: #ffffff; padding: 6px 12px; font-weight: bold; }
+.button { background-color: #363636; color: #eeeeee; border: 1px solid #555555; }
+.entry, .textview { background-color: #242424; color: #eeeeee; }
+.treeview { background-color: #242424; color: #eeeeee; }
+.statusbar { background-color: #181818; color: #9a9a9a; }
+"""
 
 
 def rgba_hex(color: Gdk.RGBA) -> str:
@@ -35,135 +54,335 @@ def hex_rgba(text: str) -> Gdk.RGBA:
     return Gdk.RGBA(red=r, green=g, blue=b, alpha=1.0)
 
 
+def parse_hex(text: str) -> tuple[int, int, int]:
+    value = text.strip().lstrip("#")
+    if len(value) != 6:
+        raise ValueError("cor deve estar no formato RRGGBB")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
 class App(Gtk.Window):
     def __init__(self, key: str | None = None, verbose: bool = False):
         super().__init__(title="SM809 Control")
-        self.key = key
-        self.verbose = verbose
-        self.set_default_size(780, 580)
-        self.set_border_width(12)
-
+        self.key, self.verbose = key, verbose
+        self.set_default_size(1000, 660)
+        self.set_border_width(10)
         header = Gtk.HeaderBar(title="SM809 Control", subtitle="SOLAKAKA SM809 Wired")
         header.set_show_close_button(True)
         self.set_titlebar(header)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add(box)
         self.notebook = Gtk.Notebook()
         box.pack_start(self.notebook, True, True, 0)
         self.status = Gtk.Statusbar()
         box.pack_start(self.status, False, True, 0)
-
+        self.fw3 = self._detect_firmware3()
+        self.color_hex = "0000ff"
         self._build_light()
         self._build_buttons()
         self._build_macros()
         self._build_profiles()
+        self._read_light(silent=True)
         self._refresh_status()
 
-    # --------------------------------------------------------------- helpers
     def message(self, text: str) -> None:
         self.status.push(0, text)
 
     def safe(self, fn, *args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - erros aparecem na interface
+        except Exception as exc:  # noqa: BLE001
             self.message(f"Erro: {exc}")
             return None
 
     def mouse(self):
         return open_mouse(self.key, self.verbose)
 
+    def _detect_firmware3(self) -> bool:
+        try:
+            with self.mouse() as m:
+                return isinstance(m, UsbMouse)
+        except Exception:
+            return False
+
+    def _section(self, title: str, child: Gtk.Widget) -> Gtk.Frame:
+        frame = Gtk.Frame()
+        frame.get_style_context().add_class("frame")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        label = Gtk.Label(label=title, xalign=0)
+        label.get_style_context().add_class("section")
+        inner.pack_start(label, False, True, 0)
+        inner.pack_start(child, True, True, 0)
+        frame.add(inner)
+        return frame
+
+    def _slider(self, title: str, low: int, high: int, value: int):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        top.pack_start(Gtk.Label(label=title, xalign=0), True, True, 0)
+        readout = Gtk.Label(label=str(value))
+        top.pack_end(readout, False, True, 0)
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, low, high, 1)
+        scale.set_value(value)
+        scale.set_draw_value(False)
+        scale.set_hexpand(True)
+        scale.connect("value-changed", self._param_changed)
+        box.pack_start(top, False, True, 0)
+        box.pack_start(scale, False, True, 0)
+        return box, scale, readout
+
     def _refresh_status(self) -> None:
         def work():
             with self.mouse() as m:
-                light = Lighting(m)
-                state = light.get()
+                state = Lighting(m).get()
                 fw = ""
-                if isinstance(m, __import__("sm809.usbfs", fromlist=["UsbMouse"]).UsbMouse):
+                if isinstance(m, UsbMouse):
                     raw = m.read(proto.CMD_FIRMWARE | proto.READ)[0]
                     fw = f" | firmware {raw[0]}.{raw[1]:02x} | chave {m.key.decode()}"
                 self.message(
                     f"#{state.color[0]:02x}{state.color[1]:02x}{state.color[2]:02x} "
-                    f"{state.mode_name} p1={state.p1:#04x} p2={state.p2:#04x}{fw}"
-                )
+                    f"{state.mode_name} p1={state.p1:#04x} p2={state.p2:#04x}{fw}")
         self.safe(work)
 
-    # ------------------------------------------------------------------ luz
+    # -------------------------------------------------------------- luz
     def _build_light(self) -> None:
-        page = Gtk.Grid(row_spacing=10, column_spacing=12, border_width=16)
-        page.set_halign(Gtk.Align.CENTER)
+        page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, border_width=12)
         self.notebook.append_page(page, Gtk.Label(label="Luz"))
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        left.set_size_request(460, -1)
+        page.pack_start(left, True, True, 0)
 
-        self.color_entry = Gtk.Entry(text="0000ff", width_chars=10)
-        self.color_button = Gtk.ColorButton.new_with_rgba(hex_rgba("0000ff"))
+        modes = Gtk.Grid(row_spacing=4, column_spacing=18, border_width=10)
+        self.mode_buttons = {}
+        group = None
+        for index, (key, label, code) in enumerate(LIGHT_MODES):
+            if group is None:
+                radio = Gtk.RadioButton(label=label)
+                group = radio
+            else:
+                radio = Gtk.RadioButton.new_from_widget(group)
+                radio.set_label(label)
+            if self.fw3 and code not in (0, 1, 2, 3):
+                radio.set_sensitive(False)
+                radio.set_tooltip_text("Firmware 3.x: modo não suportado")
+            radio.connect("toggled", self._mode_changed, key)
+            self.mode_buttons[key] = radio
+            modes.attach(radio, index // 6, index % 6, 1, 1)
+        left.pack_start(self._section("Light Setting", modes), False, True, 0)
+
+        params = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, border_width=10)
+        self.brightness_box, self.brightness, self.brightness_label = self._slider("Brightness", 0, 255, 255)
+        self.frequency_box, self.frequency, self.frequency_label = self._slider("Frequency", 0, 4, 3)
+        self.length_box, self.length, self.length_label = self._slider("Length", 0, 4, 3)
+        params.pack_start(self.brightness_box, False, True, 0)
+        params.pack_start(self.frequency_box, False, True, 0)
+        params.pack_start(self.length_box, False, True, 0)
+        left.pack_start(self._section("Parameter Setting", params), False, True, 0)
+
+        colors = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, border_width=10)
+        color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.fixed_radio = Gtk.RadioButton(label="Fix Color:")
+        self.loop_radio = Gtk.RadioButton.new_from_widget(self.fixed_radio)
+        self.loop_radio.set_label("Loop Color:")
+        self.fixed_radio.set_active(True)
+        self.color_button = Gtk.ColorButton.new_with_rgba(hex_rgba(self.color_hex))
         self.color_button.connect("color-set", self._color_changed)
+        color_row.pack_start(self.fixed_radio, False, True, 0)
+        color_row.pack_start(self.color_button, False, True, 0)
+        color_row.pack_start(self.loop_radio, False, True, 0)
+        colors.pack_start(color_row, False, True, 0)
+        palette = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        for hex_color in LOOP_COLORS:
+            btn = Gtk.Button()
+            btn.set_size_request(32, 28)
+            btn.set_tooltip_text(f"#{hex_color}")
+            provider = Gtk.CssProvider()
+            provider.load_from_data(
+                f"button {{ background-color: #{hex_color}; border: 1px solid #777777; }}".encode())
+            btn.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            btn.connect("clicked", self._choose_palette_color, hex_color)
+            palette.pack_start(btn, False, True, 0)
+        colors.pack_start(palette, False, True, 0)
+        left.pack_start(self._section("Color Setting", colors), False, True, 0)
 
-        effect = Gtk.ComboBoxText()
-        for name in ("off", "static", "breathing", "neon"):
-            effect.append_text(name)
-        effect.set_active(1)
-        self.effect_combo = effect
-        self.p1 = Gtk.SpinButton.new_with_range(0, 255, 1)
-        self.p1.set_value(255)
-        self.p2 = Gtk.SpinButton.new_with_range(0, 255, 1)
-
-        apply_btn = Gtk.Button(label="Aplicar luz")
-        apply_btn.connect("clicked", self._apply_light)
-
-        presets = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        for label, color, fx in (
-            ("Azul", "0000ff", "static"), ("Vermelho", "ff0000", "static"),
-            ("Verde", "00ff00", "static"), ("Branco", "ffffff", "static"),
-            ("Desligado", "000000", "off"),
-        ):
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for label, handler in (("Apply Light", self._apply_light),
+                               ("Read Light", lambda _b: self._read_light()),
+                               ("Restore Blue", self._restore_blue)):
             btn = Gtk.Button(label=label)
-            btn.connect("clicked", self._preset, color, fx)
-            presets.pack_start(btn, False, False, 0)
+            btn.connect("clicked", handler)
+            actions.pack_start(btn, False, True, 0)
+        left.pack_start(actions, False, True, 0)
 
-        rows = [
-            ("Cor (RRGGBB)", self.color_entry, self.color_button),
-            ("Efeito", self.effect_combo, None),
-            ("Brilho (p1)", self.p1, None),
-            ("Velocidade (p2)", self.p2, None),
-        ]
-        for i, (label, widget, extra) in enumerate(rows):
-            page.attach(Gtk.Label(label=label, halign=Gtk.Align.END), 0, i, 1, 1)
-            page.attach(widget, 1, i, 1, 1)
-            if extra:
-                page.attach(extra, 2, i, 1, 1)
-        page.attach(apply_btn, 1, 4, 2, 1)
-        page.attach(presets, 0, 5, 3, 1)
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        right.pack_start(Gtk.Label(label="Preview", xalign=0), False, True, 0)
+        self.preview = Gtk.DrawingArea()
+        self.preview.set_size_request(280, 470)
+        self.preview.connect("draw", self._draw_mouse)
+        right.pack_start(self.preview, True, True, 0)
+        page.pack_start(right, False, True, 0)
+        self._update_mode_controls()
+
+    def _selected_mode(self) -> str:
+        for key, radio in self.mode_buttons.items():
+            if radio.get_active():
+                return key
+        return "static"
+
+    def _update_mode_controls(self) -> None:
+        mode = self._selected_mode()
+        self.brightness_box.set_visible(mode in ("static", "key-reaction", "slide", "yo-yo", "marbles", "flying-star"))
+        self.frequency_box.set_visible(mode in ("breathing", "neon", "wave", "trailing", "drag"))
+        self.length_box.set_visible(mode in ("neon", "wave"))
+        for label, scale in ((self.brightness_label, self.brightness),
+                             (self.frequency_label, self.frequency),
+                             (self.length_label, self.length)):
+            label.set_text(str(int(scale.get_value())))
+        self.preview.queue_draw()
+
+    def _mode_changed(self, _radio, _key: str) -> None:
+        self._update_mode_controls()
+
+    def _param_changed(self, scale: Gtk.Scale) -> None:
+        for label, candidate in ((self.brightness_label, self.brightness),
+                                 (self.frequency_label, self.frequency),
+                                 (self.length_label, self.length)):
+            if scale is candidate:
+                label.set_text(str(int(scale.get_value())))
+        self.preview.queue_draw()
 
     def _color_changed(self, button: Gtk.ColorButton) -> None:
-        self.color_entry.set_text(rgba_hex(button.get_rgba()))
+        self.color_hex = rgba_hex(button.get_rgba())
+        self.fixed_radio.set_active(True)
+        self.preview.queue_draw()
+
+    def _choose_palette_color(self, _btn, hex_color: str) -> None:
+        self.color_hex = hex_color
+        self.color_button.set_rgba(hex_rgba(hex_color))
+        self.loop_radio.set_active(True)
+        self.preview.queue_draw()
+
+    def _params_for_mode(self) -> tuple[int, int]:
+        mode = self._selected_mode()
+        p1, p2 = proto.DEFAULT_EFFECT_PARAMS[proto.EFFECTS[mode]]
+        if mode == "static":
+            p1 = int(self.brightness.get_value())
+        elif mode in ("breathing", "trailing", "drag"):
+            p1 = int(self.frequency.get_value())
+        elif mode in ("neon", "wave"):
+            p1 = int(self.frequency.get_value())
+            p2 = int(self.length.get_value())
+        elif mode in ("key-reaction", "slide", "yo-yo", "marbles", "flying-star"):
+            p1 = int(self.brightness.get_value())
+        return p1, p2
 
     def _apply_light(self, *_args) -> None:
-        color = self.color_entry.get_text()
+        mode = self._selected_mode()
+        p1, p2 = self._params_for_mode()
+        color = self.color_hex
 
         def work():
-            r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+            r, g, b = parse_hex(color)
             with self.mouse() as m:
                 light = Lighting(m)
-                light.set_color(r, g, b)
-                light.set_effect(self.effect_combo.get_active_text(),
-                                 int(self.p1.get_value()), int(self.p2.get_value()))
-            self.message(f"Luz aplicada: #{r:02x}{g:02x}{b:02x}")
+                if mode != "off":
+                    light.set_color(r, g, b)
+                light.set_effect(mode, p1, p2)
+            self.message(f"Luz aplicada: {mode} #{r:02x}{g:02x}{b:02x} p1={p1:#04x} p2={p2:#04x}")
             self._refresh_status()
-
         self.safe(work)
 
-    def _preset(self, _btn, color: str, effect: str) -> None:
-        self.color_entry.set_text(color)
-        self.color_button.set_rgba(hex_rgba(color))
-        self.effect_combo.set_active(["off", "static", "breathing", "neon"].index(effect))
+    def _restore_blue(self, *_args) -> None:
+        self.color_hex = "0000ff"
+        self.color_button.set_rgba(hex_rgba("0000ff"))
+        self.fixed_radio.set_active(True)
+        self.mode_buttons["static"].set_active(True)
+        self.brightness.set_value(255)
         self._apply_light()
 
-    # --------------------------------------------------------------- botões
+    def _read_light(self, silent: bool = False) -> None:
+        def work():
+            with self.mouse() as m:
+                state = Lighting(m).get()
+            self.color_hex = f"{state.color[0]:02x}{state.color[1]:02x}{state.color[2]:02x}"
+            self.color_button.set_rgba(hex_rgba(self.color_hex))
+            for key, radio in self.mode_buttons.items():
+                if proto.EFFECTS[key] == state.mode:
+                    radio.set_active(True)
+            if state.mode == 0x01:
+                self.brightness.set_value(state.p1)
+            if 0 <= state.p1 <= 4:
+                self.frequency.set_value(state.p1)
+            if 0 <= state.p2 <= 4:
+                self.length.set_value(state.p2)
+            self._update_mode_controls()
+            if not silent:
+                self.message("Estado do mouse carregado na interface")
+        self.safe(work)
+
+    def _draw_mouse(self, area: Gtk.DrawingArea, cr: cairo.Context) -> None:
+        width, height = area.get_allocated_width(), area.get_allocated_height()
+        cr.save()
+        cr.scale(width / 280.0, height / 470.0)
+        mode = self._selected_mode()
+        try:
+            r, g, b = parse_hex(self.color_hex)
+        except ValueError:
+            r, g, b = 0, 0, 255
+        bright = int(self.brightness.get_value()) / 255 if mode == "static" else 0.9
+
+        cr.move_to(140, 30)
+        cr.curve_to(70, 30, 38, 105, 38, 220)
+        cr.curve_to(38, 350, 82, 450, 140, 450)
+        cr.curve_to(198, 450, 242, 350, 242, 220)
+        cr.curve_to(242, 105, 210, 30, 140, 30)
+        cr.close_path()
+        gradient = cairo.LinearGradient(60, 40, 220, 450)
+        if mode == "off":
+            gradient.add_color_stop_rgb(0, 0.14, 0.14, 0.16)
+            gradient.add_color_stop_rgb(1, 0.08, 0.08, 0.09)
+        elif mode in ("neon", "wave", "yo-yo", "marbles", "flying-star"):
+            for stop, color in enumerate(LOOP_COLORS):
+                cr_color = parse_hex(color)
+                gradient.add_color_stop_rgb(stop / 7, *(c / 255 for c in cr_color))
+        else:
+            gradient.add_color_stop_rgb(0, r / 255 * bright, g / 255 * bright, b / 255 * bright)
+            gradient.add_color_stop_rgb(1, r / 255 * bright * 0.35,
+                                        g / 255 * bright * 0.35, b / 255 * bright * 0.35)
+        cr.set_source(gradient)
+        cr.fill_preserve()
+        cr.set_source_rgb(0.30, 0.30, 0.33)
+        cr.set_line_width(3)
+        cr.stroke()
+
+        cr.set_source_rgba(0.05, 0.05, 0.06, 0.85)
+        cr.set_line_width(2)
+        cr.move_to(140, 96)
+        cr.line_to(140, 205)
+        cr.stroke()
+        cr.rectangle(130, 52, 20, 44)
+        cr.fill()
+        cr.set_source_rgb(0.80, 0.84, 0.92)
+        cr.rectangle(132, 54, 16, 38)
+        cr.fill()
+
+        cr.set_source_rgba(0.10, 0.10, 0.12, 0.9)
+        for index in range(9):
+            y = 96 + index * 33
+            cr.rectangle(48, y, 30, 26)
+            cr.fill()
+            cr.set_source_rgb(0.85, 0.86, 0.90)
+            cr.select_font_face("Sans")
+            cr.set_font_size(12)
+            cr.move_to(59, y + 18)
+            cr.show_text(str(index + 1))
+            cr.set_source_rgba(0.10, 0.10, 0.12, 0.9)
+        cr.restore()
+
+    # ------------------------------------------------------------ botões
     def _build_buttons(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=12)
         self.notebook.append_page(page, Gtk.Label(label="Botões"))
-
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         top.pack_start(Gtk.Label(label="Perfil:"), False, False, 0)
         self.profile_combo = Gtk.ComboBoxText()
@@ -181,11 +400,8 @@ class App(Gtk.Window):
         view = Gtk.TreeView(model=self.button_store)
         self.button_view = view
         for i, title in enumerate(("Slot", "Ação", "Bytes")):
-            renderer = Gtk.CellRendererText()
-            column = Gtk.TreeViewColumn(title, renderer, text=i)
-            view.append_column(column)
-        select = view.get_selection()
-        select.connect("changed", self._button_selected)
+            view.append_column(Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=i))
+        view.get_selection().connect("changed", self._button_selected)
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_height(300)
         scroll.add(view)
@@ -210,8 +426,7 @@ class App(Gtk.Window):
     def _reload_buttons(self) -> None:
         def work():
             with self.mouse() as m:
-                page = self._profile_number() - 1 if isinstance(
-                    m, __import__("sm809.usbfs", fromlist=["UsbMouse"]).UsbMouse) else 0
+                page = self._profile_number() - 1 if isinstance(m, UsbMouse) else 0
                 buttons = Buttons(m, page).read()
             self.button_store.clear()
             for b in buttons:
@@ -228,24 +443,20 @@ class App(Gtk.Window):
         if not treeiter:
             self.message("Selecione um slot na lista")
             return
-        slot = model[treeiter][0]
-        action = self.action_entry.get_text()
+        slot, action = model[treeiter][0], self.action_entry.get_text()
 
         def work():
             with self.mouse() as m:
-                page = self._profile_number() - 1 if isinstance(
-                    m, __import__("sm809.usbfs", fromlist=["UsbMouse"]).UsbMouse) else 0
+                page = self._profile_number() - 1 if isinstance(m, UsbMouse) else 0
                 Buttons(m, page).set(slot, action)
             self.message(f"Botão {slot} -> {action}")
             self._reload_buttons()
-
         self.safe(work)
 
-    # ---------------------------------------------------------------- macros
+    # ------------------------------------------------------------- macros
     def _build_macros(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, border_width=12)
         self.notebook.append_page(page, Gtk.Label(label="Macros"))
-
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         top.pack_start(Gtk.Label(label="Página (1–9):"), False, False, 0)
         self.macro_page = Gtk.SpinButton.new_with_range(1, 9, 1)
@@ -262,24 +473,22 @@ class App(Gtk.Window):
         self.macro_view = Gtk.TextView()
         css = Gtk.CssProvider()
         css.load_from_data(b"textview { font-family: monospace; font-size: 11pt; }")
-        self.macro_view.get_style_context().add_provider(
-            css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.macro_view.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_height(320)
         scroll.add(self.macro_view)
         page.pack_start(scroll, True, True, 0)
         page.pack_start(Gtk.Label(
-            label='Eventos: {"key":4,"press":true,"delay":1} | WAIT: {"key":0,"command":1,"wait":50} (2 ms/unidade)',
+            label='Eventos: {"key":4,"press":true,"delay":1} | WAIT: {"key":0,"command":1,"wait":50}',
             halign=Gtk.Align.START), False, True, 0)
         self._read_macro()
 
     def _macro_text(self) -> str:
-        return self.macro_view.get_buffer().get_text(self.macro_view.get_buffer().get_start_iter(),
-                                                     self.macro_view.get_buffer().get_end_iter(), False)
+        buf = self.macro_view.get_buffer()
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
 
     def _set_macro_text(self, text: str) -> None:
-        buf = self.macro_view.get_buffer()
-        buf.set_text(text)
+        self.macro_view.get_buffer().set_text(text)
 
     def _read_macro(self) -> None:
         def work():
@@ -301,11 +510,10 @@ class App(Gtk.Window):
             self.message(f"{len(events)} evento(s) gravados")
         self.safe(work)
 
-    # --------------------------------------------------------------- perfis
+    # ------------------------------------------------------------ perfis
     def _build_profiles(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, border_width=12)
         self.notebook.append_page(page, Gtk.Label(label="Perfis"))
-
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         top.pack_start(Gtk.Label(label="Nome:"), False, False, 0)
         self.profile_name = Gtk.Entry(text="azul", hexpand=True)
@@ -351,7 +559,6 @@ class App(Gtk.Window):
                 path = Profiles(m, data_home() / "profiles").save(name)
             self.message(f"Perfil salvo: {path}")
             self._reload_profiles()
-
         self.safe(work)
 
     def _apply_profile(self, *_args) -> None:
@@ -362,16 +569,23 @@ class App(Gtk.Window):
                 Profiles(m, data_home() / "profiles").apply(name)
             self.message(f"Perfil aplicado: {name}")
             self._refresh_status()
+            self._read_light(silent=True)
             self._reload_buttons()
-
         self.safe(work)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Interface gráfica do SM809")
-    parser.add_argument("--key", help="chave de 6 caracteres (ex.: FB1570)")
+    parser.add_argument("--key", help="chave de 6 caracteres")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    settings = Gtk.Settings.get_default()
+    if settings:
+        settings.set_property("gtk-application-prefer-dark-theme", True)
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     App(args.key, args.verbose).show_all()
     Gtk.main()
 
